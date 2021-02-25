@@ -2,11 +2,13 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -17,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
+	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
 // Handlers represents a group of http handlers in charge of handling packages
@@ -141,6 +144,61 @@ func (h *Handlers) GetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	helpers.RenderJSON(w, dataJSON, helpers.DefaultAPICacheMaxAge, http.StatusOK)
+}
+
+// GetChartTemplates is an http handler used to get the templates for a given
+// given Helm chart package snapshot.
+func (h *Handlers) GetChartTemplates(w http.ResponseWriter, r *http.Request) {
+	// Get package from database as we need the content url
+	input := &hub.GetPackageInput{
+		PackageID: chi.URLParam(r, "packageID"),
+		Version:   chi.URLParam(r, "version"),
+	}
+	p, err := h.pkgManager.Get(r.Context(), input)
+	if err != nil {
+		h.logger.Error().Err(err).Str("method", "GetChartTemplates").Send()
+		helpers.RenderErrorJSON(w, err)
+		return
+	}
+
+	// Only Helm charts packages can have templates
+	// NOTE: OCI based repositories are NOT supported yet
+	if p.Repository.Kind != hub.Helm || strings.HasPrefix(p.Repository.URL, hub.RepositoryOCIPrefix) {
+		helpers.RenderErrorWithCodeJSON(w, nil, http.StatusBadRequest)
+		return
+	}
+
+	// Download chart package from remote source
+	req, _ := http.NewRequest("GET", p.ContentURL, nil)
+	req = req.WithContext(r.Context())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.logger.Error().Err(err).Str("method", "GetChartTemplates").Send()
+		helpers.RenderErrorJSON(w, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		err := fmt.Errorf("unexpected status code received: %d", resp.StatusCode)
+		h.logger.Error().Err(err).Str("method", "GetChartTemplates").Send()
+		helpers.RenderErrorJSON(w, err)
+		return
+	}
+	chart, err := loader.LoadArchive(resp.Body)
+	if err != nil {
+		h.logger.Error().Err(err).Str("method", "GetChartTemplates").Send()
+		helpers.RenderErrorJSON(w, err)
+		return
+	}
+
+	// Prepare json data with templates and return it
+	dataJSON, err := json.Marshal(chart.Templates)
+	if err != nil {
+		h.logger.Error().Err(err).Str("method", "GetChartTemplates").Send()
+		helpers.RenderErrorJSON(w, err)
+		return
+	}
+	helpers.RenderJSON(w, dataJSON, 24*time.Hour, http.StatusOK)
 }
 
 // GetValuesSchema is an http handler used to get the values schema of a
