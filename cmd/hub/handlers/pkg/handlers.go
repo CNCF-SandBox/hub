@@ -191,8 +191,12 @@ func (h *Handlers) GetChartTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prepare json data with templates and return it
-	dataJSON, err := json.Marshal(chart.Templates)
+	// Prepare json data with templates and values and return it
+	data := map[string]interface{}{
+		"templates": chart.Templates,
+		"values":    chart.Values,
+	}
+	dataJSON, err := json.Marshal(data)
 	if err != nil {
 		h.logger.Error().Err(err).Str("method", "GetChartTemplates").Send()
 		helpers.RenderErrorJSON(w, err)
